@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
+    ros-humble-executive-smach \
     wget \
     curl \
     python3-pip \
@@ -18,9 +19,9 @@ RUN apt-get update && apt-get install -y \
 # 4. Install Hailo AI Drivers (HailoRT)
 # Note: You will likely need to download the specific ARM64 .deb file from Hailo.
 # This assumes you have the .deb file saved in an 'installers' folder next to this Dockerfile.
-COPY ./installers/hailort_latest_arm64.deb /tmp/
-RUN dpkg -i /tmp/hailort_latest_arm64.deb || apt-get install -f -y \
-    && rm /tmp/hailort_latest_arm64.deb
+# COPY ./installers/hailort_latest_arm64.deb /tmp/
+# RUN dpkg -i /tmp/hailort_latest_arm64.deb || apt-get install -f -y \
+#     && rm /tmp/hailort_latest_arm64.deb
 
 # 5. Copy your team's code (the 'src' folder) into the container
 COPY ./src /farm_robot_ws/src
