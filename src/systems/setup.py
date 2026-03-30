@@ -20,8 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # This links the terminal command 'state_machine' to your main() function
-            'state_machine = systems.state_machine:main'
+            'state_machine = systems.state_machine:main',
+            'watchdog = systems.watchdog:main'
         ],
     },
 )
