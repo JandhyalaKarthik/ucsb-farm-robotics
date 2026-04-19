@@ -206,18 +206,19 @@ class TurningWithRowCheck(smach.State):
     def execute(self, userdata):
         self.node.get_logger().info("[STATE: TURNING] Executing turn and checking for next row...")
         
-        # Ensure spraying is stopped during turn
         self.node.stop_spray()
         self.node.halt_robot()
         
-        # Simulate turning process
         self.node.get_logger().info("[STATE: TURNING] Performing U-turn...")
-        time.sleep(3.0)  # Simulating turn time
         
-        # Reset end-of-row flag
+        # NON-BLOCKING 3-second turn simulation
+        turn_start_time = time.time()
+        while time.time() - turn_start_time < 3.0:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+            if self.node.e_stop_triggered:
+                return 'fatal_error'
+        
         self.node.reached_end_of_row = False
-        
-        # Wait for row detection with timeout
         self.node.get_logger().info(f"[STATE: TURNING] Waiting up to {self.node.end_time_limit} seconds for new row...")
         start_time = time.time()
         
@@ -231,7 +232,6 @@ class TurningWithRowCheck(smach.State):
                 self.node.get_logger().info("[STATE: TURNING] New row detected! Continuing farming.")
                 return 'turn_complete_row_found'
         
-        # Timeout reached without finding new row
         self.node.get_logger().info(f"[STATE: TURNING] No new row found within {self.node.end_time_limit} seconds. Ending farming operation.")
         return 'end_time_reached'
 
