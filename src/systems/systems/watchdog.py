@@ -40,13 +40,17 @@ class WatchdogNode(Node):
     def check_timeouts(self):
         """The main security loop that checks for dead connections."""
         if self.e_stop_active:
-            return # If the robot is already killed, do nothing
+            # CONTINUOUSLY slam the brakes so Nav2 cannot override the halt command
+            stop_msg = Twist()
+            stop_msg.linear.x = 0.0
+            stop_msg.angular.z = 0.0
+            self.cmd_vel_pub.publish(stop_msg)
+            return 
 
         now = self.get_clock().now()
         imu_silence = now - self.last_imu_time
         pico_silence = now - self.last_pico_time
 
-        # If either sensor has been silent for more than 200ms, trigger the alarm
         if imu_silence > self.timeout_duration or pico_silence > self.timeout_duration:
             self.trigger_e_stop(imu_silence > self.timeout_duration)
 
