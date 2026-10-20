@@ -1,0 +1,28 @@
+# Laptop:  docker compose run --rm robot          (shell with the workspace built)
+# Pi 5:    docker compose --profile pi up         (systems stack + micro-ROS agent for the Pico)
+services:
+  robot:
+    build: .
+    image: farm-robot:humble
+    network_mode: host   # ROS 2 DDS discovery needs the host network
+    ipc: host
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./src:/farm_robot_ws/src
+
+  systems:
+    image: farm-robot:humble
+    profiles: [pi]
+    network_mode: host
+    ipc: host
+    command: bash -c "source /farm_robot_ws/install/setup.bash && ros2 launch systems systems.launch.py"
+
+  micro_ros_agent:
+    image: microros/micro-ros-agent:humble
+    profiles: [pi]
+    network_mode: host
+    # Pico USB-serial port and baud are placeholders until Controls confirms them
+    devices:
+      - ${PICO_DEV:-/dev/ttyACM0}:${PICO_DEV:-/dev/ttyACM0}
+    command: serial --dev ${PICO_DEV:-/dev/ttyACM0} -b ${PICO_BAUD:-115200}

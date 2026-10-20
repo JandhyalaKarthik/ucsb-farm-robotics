@@ -1,0 +1,26 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (colcon build runs inside)
+        run: docker build -t farm-robot:humble .
+      - name: Smoke test systems launch
+        # Expect the watchdog to fault after the 5 s grace (no sensors in CI) -- proves all three nodes start
+        run: |
+          docker run --rm farm-robot:humble bash -c '
+            set -e
+            source /farm_robot_ws/install/setup.bash
+            timeout 12 ros2 launch systems systems.launch.py > /tmp/launch.log 2>&1 || true
+            cat /tmp/launch.log
+            grep -q "Safety Watchdog initialized" /tmp/launch.log
+            grep -q "never came online" /tmp/launch.log
+            grep -q "STATE: FAULT" /tmp/launch.log
+            ! grep -qi "traceback" /tmp/launch.log
+          '

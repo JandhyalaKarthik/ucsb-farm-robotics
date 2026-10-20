@@ -1,0 +1,23 @@
+# Picks which velocity source drives the wheels. Output is remapped to /cmd_vel (Pico listens there).
+# Higher priority wins while its topic is fresh (published within `timeout` seconds).
+twist_mux:
+  ros__parameters:
+    topics:
+      navigation:
+        topic: cmd_vel_nav
+        timeout: 0.5
+        priority: 10
+      systems:
+        topic: cmd_vel_systems
+        timeout: 0.5
+        priority: 100
+      safety:
+        topic: cmd_vel_safety
+        timeout: 0.5
+        priority: 255
+    locks:
+      # While /e_stop is true, every input below priority 200 is ignored (only safety zeros pass)
+      e_stop:
+        topic: e_stop
+        timeout: 0.0
+        priority: 200

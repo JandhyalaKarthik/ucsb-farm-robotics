@@ -3,6 +3,7 @@ from rclpy.node import Node
 import smach
 from std_msgs.msg import Bool, String, Int32
 from geometry_msgs.msg import Twist
+from systems.watchdog import E_STOP_QOS
 import time
 from enum import Enum
 
@@ -18,7 +19,8 @@ class EnhancedFarmBotNode(Node):
         super().__init__('enhanced_farm_bot_state_machine')
         
         # Publishers: Sending commands OUT
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # Goes through twist_mux: beats Nav2 (/cmd_vel_nav), loses to the watchdog (/cmd_vel_safety)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_systems', 10)
         self.spray_control_pub = self.create_publisher(String, '/spray_control', 10)
         self.spray_type_pub = self.create_publisher(String, '/spray_type', 10)
         
@@ -26,7 +28,7 @@ class EnhancedFarmBotNode(Node):
         self.create_subscription(Bool, '/pesticide_detected', self.cv_pesticide_callback, 10)
         self.create_subscription(Bool, '/end_of_row', self.nav_callback, 10)
         self.create_subscription(Bool, '/row_detected', self.row_detection_callback, 10)
-        self.create_subscription(Bool, '/e_stop', self.fault_callback, 10)
+        self.create_subscription(Bool, '/e_stop', self.fault_callback, E_STOP_QOS)
         self.create_subscription(Bool, '/start_system', self.start_callback, 10)
 
         # State Flags
@@ -183,6 +185,8 @@ class PesticideTreatment(smach.State):
         
         start_time = time.time()
         while time.time() - start_time < self.node.pesticide_spray_duration:
+            # Re-send every loop: twist_mux drops a single message after its timeout and Nav2 would resume
+            self.node.halt_robot()
             rclpy.spin_once(self.node, timeout_sec=0.1)
             if self.node.e_stop_triggered:
                 self.node.stop_spray()
@@ -250,7 +254,8 @@ class EndOfField(smach.State):
         
         # Stay in this state
         while rclpy.ok():
-            rclpy.spin_once(self.node, timeout_sec=1.0)
+            self.node.halt_robot()
+            rclpy.spin_once(self.node, timeout_sec=0.1)
             if self.node.e_stop_triggered:
                 break
 
@@ -269,9 +274,10 @@ class Fault(smach.State):
             self.node.halt_robot()
             time.sleep(0.1)
         
-        # Stay in fault state
+        # Stay in fault state, holding zero velocity
         while rclpy.ok():
-            rclpy.spin_once(self.node, timeout_sec=1.0)
+            self.node.halt_robot()
+            rclpy.spin_once(self.node, timeout_sec=0.1)
 
 
 # ==========================================
