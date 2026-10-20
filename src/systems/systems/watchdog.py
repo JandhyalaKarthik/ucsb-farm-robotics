@@ -1,78 +1,93 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
 from sensor_msgs.msg import Imu # Standard ROS 2 message for IMU data
 
+# Latched e-stop: late subscribers (e.g. the state machine starting after us) still get the last value
+E_STOP_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+
 class WatchdogNode(Node):
     def __init__(self):
         super().__init__('systems_watchdog')
-        
-        # Publishers: Sending the kill signals
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.e_stop_pub = self.create_publisher(Bool, '/e_stop', 10)
-        
+
+        # Max silence allowed on a sensor topic once it has started publishing
+        self.declare_parameter('timeout_sec', 0.2)
+        # Time every sensor gets after boot to send its first message
+        self.declare_parameter('startup_grace_sec', 5.0)
+        self.timeout_duration = rclpy.time.Duration(
+            seconds=self.get_parameter('timeout_sec').value)
+        self.startup_grace = rclpy.time.Duration(
+            seconds=self.get_parameter('startup_grace_sec').value)
+
+        # Publishers: Sending the kill signals.
+        # /cmd_vel_safety is the highest-priority input to twist_mux, so these zeros always win over Nav2.
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_safety', 10)
+        self.e_stop_pub = self.create_publisher(Bool, '/e_stop', E_STOP_QOS)
+
         # Subscribers: Listening to the hardware "heartbeats"
         self.create_subscription(Imu, '/imu/data', self.imu_callback, 10)
         self.create_subscription(Bool, '/pico/heartbeat', self.pico_callback, 10)
-        
-        # Timestamps to track the last time we heard from the sensors
-        self.last_imu_time = self.get_clock().now()
-        self.last_pico_time = self.get_clock().now()
-        
-        # The strict 200ms limit set by your team lead
-        self.timeout_duration = rclpy.time.Duration(seconds=0.2)
-        
+
+        # None until the first message arrives, so a sensor that is still booting isn't treated as dead
+        self.start_time = self.get_clock().now()
+        self.last_seen = {'IMU': None, 'Pico': None}
+
         # The Watchdog Timer: This loop runs 20 times a second (every 50ms) to check the clocks
         self.timer = self.create_timer(0.05, self.check_timeouts)
         self.e_stop_active = False
-        
+        self.publish_e_stop(False)
+
         self.get_logger().info("Safety Watchdog initialized. Monitoring sensors...")
 
     def imu_callback(self, msg):
-        """Every time Branden's LIDAR/IMU node publishes data, reset the IMU clock."""
-        self.last_imu_time = self.get_clock().now()
+        self.last_seen['IMU'] = self.get_clock().now()
 
     def pico_callback(self, msg):
-        """Every time Aylin's Pico sends a pulse, reset the Pico clock."""
-        self.last_pico_time = self.get_clock().now()
+        self.last_seen['Pico'] = self.get_clock().now()
+
+    def publish_e_stop(self, active):
+        msg = Bool()
+        msg.data = active
+        self.e_stop_pub.publish(msg)
+
+    def publish_zero_velocity(self):
+        self.cmd_vel_pub.publish(Twist())
 
     def check_timeouts(self):
         """The main security loop that checks for dead connections."""
         if self.e_stop_active:
-            # CONTINUOUSLY slam the brakes so Nav2 cannot override the halt command
-            stop_msg = Twist()
-            stop_msg.linear.x = 0.0
-            stop_msg.angular.z = 0.0
-            self.cmd_vel_pub.publish(stop_msg)
-            return 
+            # Keep re-asserting both signals so nothing downstream can drift out of the halt
+            self.publish_e_stop(True)
+            self.publish_zero_velocity()
+            return
 
         now = self.get_clock().now()
-        imu_silence = now - self.last_imu_time
-        pico_silence = now - self.last_pico_time
+        for name, last in self.last_seen.items():
+            if last is None:
+                if now - self.start_time > self.startup_grace:
+                    self.trigger_e_stop(f"{name} never came online")
+                    return
+            elif now - last > self.timeout_duration:
+                self.trigger_e_stop(f"Lost {name} connection")
+                return
 
-        if imu_silence > self.timeout_duration or pico_silence > self.timeout_duration:
-            self.trigger_e_stop(imu_silence > self.timeout_duration)
-
-    def trigger_e_stop(self, imu_failed):
+    def trigger_e_stop(self, reason):
         """The emergency protocol."""
         self.e_stop_active = True
-        
-        if imu_failed:
-            self.get_logger().fatal("WATCHDOG TRIGGERED: Lost IMU connection!")
-        else:
-            self.get_logger().fatal("WATCHDOG TRIGGERED: Lost Pico serial connection!")
+        self.get_logger().fatal(f"WATCHDOG TRIGGERED: {reason}!")
 
-        # 1. Alert the State Machine so it switches to the FAULT state
-        e_stop_msg = Bool()
-        e_stop_msg.data = True
-        self.e_stop_pub.publish(e_stop_msg)
+        # 1. Alert the State Machine (and lock twist_mux) so it switches to the FAULT state
+        self.publish_e_stop(True)
 
         # 2. Hard override: Slam the hardware brakes immediately
-        stop_msg = Twist()
-        stop_msg.linear.x = 0.0
-        stop_msg.angular.z = 0.0
-        self.cmd_vel_pub.publish(stop_msg)
+        self.publish_zero_velocity()
         self.get_logger().fatal("Zero-velocity command published. Robot halted.")
 
 def main(args=None):

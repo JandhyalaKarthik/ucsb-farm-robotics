@@ -1,3 +1,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Vendor installers (large, licensed)
+installers/*.deb
+
+# colcon
+build/
+install/
+log/

@@ -27,10 +27,13 @@ Message types use standard ROS 2 packages (`std_msgs`, `geometry_msgs`, `sensor_
 
 | Topic | Type | Publisher | Subscriber(s) | Notes |
 |-------|------|-----------|-----------------|-------|
-| `/cmd_vel` | `geometry_msgs/Twist` | Navigation (primary); Watchdog when latched | Systems state machine; Pico drivetrain (per internal spec) | Linear `x`, angular `z` are the usual fields. Watchdog publishes zeros while e-stop is active. |
-| `/e_stop` | `std_msgs/Bool` | Watchdog on fault | Systems state machine | `data: true` means enter fault handling. |
-| `/imu/data` | `sensor_msgs/Imu` | Navigation (BNO055 / fused pipeline) | Watchdog | Watchdog expects messages **at least every 200 ms**; silence triggers e-stop. |
-| `/pico/heartbeat` | `std_msgs/Bool` | Pico (micro-ROS) | Watchdog | Any message resets the Pico timer; **200 ms** silence triggers e-stop. |
+| `/cmd_vel` | `geometry_msgs/Twist` | **`twist_mux` only** | Pico drivetrain | Final wheel command. Nobody else publishes here. Linear `x`, angular `z`. |
+| `/cmd_vel_nav` | `geometry_msgs/Twist` | Navigation (Nav2: remap its `cmd_vel` output here) | `twist_mux` | Priority 10 (lowest). |
+| `/cmd_vel_systems` | `geometry_msgs/Twist` | Systems state machine | `twist_mux` | Priority 100. Used to hold the robot still (pesticide stop, end of field, fault). |
+| `/cmd_vel_safety` | `geometry_msgs/Twist` | Watchdog | `twist_mux` | Priority 255. Zeros, published every 50 ms while e-stop is active. |
+| `/e_stop` | `std_msgs/Bool` | Watchdog | Systems state machine; `twist_mux` lock | **Latched** (reliable + transient_local, depth 1): late subscribers get the current value. `false` at boot, `true` on fault and re-sent every 50 ms. While `true`, twist_mux ignores Nav2 and systems. |
+| `/imu/data` | `sensor_msgs/Imu` | Navigation (BNO055 / fused pipeline) | Watchdog | After its first message, silence over `timeout_sec` (default **200 ms**) triggers e-stop. Must appear within `startup_grace_sec` (default 5 s) of watchdog start. |
+| `/pico/heartbeat` | `std_msgs/Bool` | Pico (micro-ROS) | Watchdog | Same rules as `/imu/data`. |
 
 ### Row / field logic (systems ↔ navigation)
 
@@ -79,7 +82,9 @@ Encoder and custom topics from Pico (e.g. wheel ticks) should be added to this t
 | Executable | Role |
 |------------|------|
 | `state_machine` | SMACH high-level states: idle, navigating with spray, pesticide treatment, turning, end of field, fault. |
-| `watchdog` | Monitors `/imu/data` and `/pico/heartbeat`; on timeout publishes `/e_stop` and zeros `/cmd_vel`. |
+| `watchdog` | Monitors `/imu/data` and `/pico/heartbeat`; on timeout latches `/e_stop` and publishes zeros on `/cmd_vel_safety`. Params: `timeout_sec`, `startup_grace_sec`. |
+
+Launch the whole package (watchdog, state machine, twist_mux): `ros2 launch systems systems.launch.py`. Mux priorities live in `src/systems/config/twist_mux.yaml`.
 
 ---
 
@@ -99,8 +104,9 @@ High-level states in code align with the lead doc as follows; names in logs may 
 
 ## Docker and build
 
-- Root **`Dockerfile`**: ROS Humble base, Nav2, SMACH, expects **`installers/hailort_latest_arm64.deb`** beside the Dockerfile for HailoRT on ARM64.
-- Workspace is built with **`colcon build`** after `src/` is copied in.
+- Root **`Dockerfile`**: ROS Humble base, Nav2, SMACH, twist_mux. Builds on x86 laptops and the arm64 Pi. HailoRT is installed only on arm64 and only if a `hailort*_arm64.deb` is in `installers/` (git-ignored).
+- `rosdep install` then **`colcon build`** run after `src/` is copied in, so `package.xml` deps are installed automatically.
+- **`docker-compose.yml`**: `docker compose run --rm robot` for a dev shell; `docker compose --profile pi up` on the Pi runs the systems launch plus the micro-ROS agent (`PICO_DEV`, `PICO_BAUD` env vars; defaults `/dev/ttyACM0`, `115200` are placeholders).
 
 If your package needs extra apt or pip dependencies, add them to the Dockerfile (or a documented layer) so Pi images stay reproducible.
 
